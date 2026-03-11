@@ -379,6 +379,10 @@ bool IGameProfile::findProcessEvent(uint8_t *uObject, uintptr_t *pe_address_out,
         return true;
     }
 
+#else
+    ((void)uObject);
+    ((void)pe_address_out);
+    ((void)pe_index_out);
 #endif
 
     return false;

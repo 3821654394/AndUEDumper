@@ -9,7 +9,10 @@
 #include <sys/types.h>
 #include <thread>
 
-#include "Utils/KittyCmdln.hpp"
+#include <argsparse/argsparse.hpp>
+#define kPROGRAM_NAME "UEDump3r"
+#define kPROGRAM_VER "4.3.1"
+
 #include "Utils/Logger.hpp"
 #include "Utils/ProgressUtils.hpp"
 
@@ -80,8 +83,6 @@ std::vector<IGameProfile *> UE_Games = {
     new PUBGProfile(),
 };
 
-#define kUEDUMPER_VERSION "4.3.0"
-
 bool bNeededHelp = false;
 
 int main(int argc, char **args)
@@ -90,54 +91,57 @@ int main(int argc, char **args)
     setbuf(stderr, nullptr);
     setbuf(stdin, nullptr);
 
-    LOGI("Using UE Dumper %s", kUEDUMPER_VERSION);
+    LOGI("Using UE Dumper %s", kPROGRAM_VER);
 
-    KittyCmdln cmdline(argc, args);
+    argparse::ArgumentParser program(kPROGRAM_NAME, kPROGRAM_VER);
 
-    cmdline.setUsage("Usage: ./UEDump3r [-h] [-o] [ options ]");
-
-    cmdline.addCmd("-h", "--help", "show available arguments", false, [&cmdline]()
-    { std::cout << cmdline.toString() << std::endl; bNeededHelp = true; });
-
-    char sOutDir[0xff] = {0};
-    cmdline.addScanf("-o", "--output", "specify output directory path.", true, "%s", sOutDir);
-
-    // optional
-    char sGamePkg[0xff] = {0};
-    cmdline.addScanf("-p", "--package", "specify game package ID in advance.", false, "%s", sGamePkg);
-
-    // options
+    std::string gamePkg, outputDir;
     bool bDumpLib = false;
-    cmdline.addFlag("-d", "--dumplib", "dump UE library from memory.", false, &bDumpLib);
+    int memAccessType = 0;
 
-    cmdline.parseArgs();
+    program.add_argument("-p", "--package")
+        .help("Specify game package ID in advance.")
+        .store_into(gamePkg)
+        .metavar("<name>");
 
-    if (bNeededHelp)
+    program.add_argument("-o", "--output")
+        .help("Output directory path.")
+        .required()
+        .store_into(outputDir)
+        .metavar("<path>");
+
+    program.add_argument("-d", "--dump").help("Dump UE library from memory.").store_into(bDumpLib);
+
+    program.add_argument("-m", "--mem")
+        .help("Specify memory access type in advance.")
+        .choices(1, 2)
+        .store_into(memAccessType);
+
+    try
     {
-        return 0;
+        program.parse_args(argc, args);
     }
-
-    if (!cmdline.requiredCmdsCheck())
+    catch (const std::exception &err)
     {
-        LOGE("Required arguments needed. see -h.");
+        std::cerr << err.what() << std::endl;
+        std::cerr << program;
         return 1;
     }
 
-    std::string sOutDirectory = sOutDir, sGamePackage = sGamePkg;
-    if (sOutDirectory.empty())
+    if (outputDir.empty())
     {
         LOGE("Output directory path is not specified.");
         return 1;
     }
 
-    if (sGamePackage.empty())
+    if (gamePkg.empty())
     {
         std::sort(UE_Games.begin(), UE_Games.end(), [](const IGameProfile *a, const IGameProfile *b)
         {
             return a->GetAppName() < b->GetAppName();
         });
 
-        std::cout << "Choose from the available games:" << std::endl;
+        std::cout << "Choose from the available running games:" << std::endl;
         int gameIndex = 1;
         std::map<int, std::pair<int, int>> gameIndexMap;
         for (size_t i = 0; i < UE_Games.size(); i++)
@@ -145,6 +149,9 @@ int main(int argc, char **args)
             const auto &appIDs = UE_Games[i]->GetAppIDs();
             for (size_t j = 0; j < appIDs.size(); j++)
             {
+                if (KittyMemoryEx::getProcessID(appIDs[j]) <= 0)
+                    continue;
+
                 const char *nspace = gameIndex < 10 ? "  " : " ";
                 std::cout << "\t" << gameIndex << nspace << ": " << UE_Games[i]->GetAppName() << " | " << appIDs[j].c_str() << std::endl;
                 gameIndexMap[gameIndex] = {i, j};
@@ -161,13 +168,13 @@ int main(int argc, char **args)
             return 1;
         }
 
-        sGamePackage = UE_Games[gameIndexMap[gameNumber].first]->GetAppIDs()[gameIndexMap[gameNumber].second];
+        gamePkg = UE_Games[gameIndexMap[gameNumber].first]->GetAppIDs()[gameIndexMap[gameNumber].second];
     }
 
-    auto gamePIDs = KittyMemoryEx::getProcessIDs(sGamePackage);
+    auto gamePIDs = KittyMemoryEx::getProcessIDs(gamePkg);
     if (gamePIDs.empty())
     {
-        LOGE("Couldn't find \"%s\" in the running processes list.", sGamePackage.c_str());
+        LOGE("Couldn't find \"%s\" in the running processes list.", gamePkg.c_str());
         return 1;
     }
 
@@ -177,11 +184,12 @@ int main(int argc, char **args)
         std::cout << "Found multiple processes with same package name, Choose one: " << std::endl;
         for (size_t i = 0; i < gamePIDs.size(); i++)
         {
-            std::cout << "\t" << i << ": PID(" << gamePIDs[i] << ")" << std::endl;
+            std::cout << "\t" << i+1 << ": PID(" << gamePIDs[i] << ")" << std::endl;
         }
         std::cout << "Process number: ";
         int gamePidIndex = 0;
         scanf("%d", &gamePidIndex);
+        gamePidIndex--;
         if (gamePidIndex < 0 || gamePidIndex >= int(gamePIDs.size()))
         {
             LOGE("Selected PID index is out of range.");
@@ -194,14 +202,28 @@ int main(int argc, char **args)
         gamePID = gamePIDs.front();
     }
 
-    LOGI("Game: %s", sGamePackage.c_str());
+    if (memAccessType == 0)
+    {
+        std::cout << "Choose memory access type: " << std::endl;
+        std::cout << "\t" << "1: process_vm_readv" << std::endl;
+        std::cout << "\t" << "2: pread" << std::endl;
+        std::cout << "Memory access: ";
+        scanf("%d", &memAccessType);
+        if (memAccessType < 1 || memAccessType > 2)
+        {
+            LOGE("Selected memory access is out of range.");
+            return 1;
+        }
+    }
+
+    LOGI("Game: %s", gamePkg.c_str());
     LOGI("Process ID: %d", gamePID);
-    LOGI("Output directory: %s", sOutDirectory.c_str());
+    LOGI("Output directory: %s", outputDir.c_str());
     LOGI("Dump Library: %s", bDumpLib ? "true" : "false");
     LOGI("==========================");
 
-    std::string sDumpDir = sOutDirectory + "/UEDump3r";
-    std::string sDumpGameDir = sDumpDir + "/" + sGamePackage;
+    std::string sDumpDir = outputDir + "/UEDump3r";
+    std::string sDumpGameDir = sDumpDir + "/" + gamePkg;
     IOUtils::delete_directory(sDumpGameDir);
 
     if (IOUtils::mkdir_recursive(sDumpGameDir, 0777) == -1)
@@ -212,7 +234,8 @@ int main(int argc, char **args)
     }
 
     LOGI("Initializing Memory...");
-    if (!kMgr.initialize(gamePID, EK_MEM_OP_SYSCALL, false) && !kMgr.initialize(gamePID, EK_MEM_OP_IO, false))
+    EKittyMemOP memOp = memAccessType == 1 ? EK_MEM_OP_SYSCALL : EK_MEM_OP_IO;
+    if (!kMgr.initialize(gamePID, memOp, false) && !kMgr.initialize(gamePID, EK_MEM_OP_IO, false))
     {
         LOGE("Failed to initialize KittyMemoryMgr.");
         return 1;
@@ -298,7 +321,7 @@ int main(int argc, char **args)
     {
         for (auto &pkg : it->GetAppIDs())
         {
-            if (sGamePackage != pkg)
+            if (gamePkg != pkg)
                 continue;
 
             if (bDumpLib)
@@ -311,7 +334,7 @@ int main(int argc, char **args)
                 }
 
                 LOGI("Dumping unreal lib from memory...");
-                std::string libDumpPath = KittyUtils::String::Fmt("%s/libUE_%p-%p.so", sDumpGameDir.c_str(), ue_elf.base(), ue_elf.end());
+                std::string libDumpPath = KittyUtils::String::fmt("%s/libUE_%p-%p.so", sDumpGameDir.c_str(), ue_elf.base(), ue_elf.end());
                 bool res = kMgr.dumpMemELF(ue_elf, libDumpPath);
                 LOGI("Dumping lib: %s.",  res ? "success" : "failed");
                 if (res)
@@ -352,7 +375,7 @@ done:
     {
         if (!it.first.empty())
         {
-            std::string path = KittyUtils::String::Fmt("%s/%s", sDumpGameDir.c_str(), it.first.c_str());
+            std::string path = KittyUtils::String::fmt("%s/%s", sDumpGameDir.c_str(), it.first.c_str());
             it.second.writeBufferToFile(path);
         }
     }

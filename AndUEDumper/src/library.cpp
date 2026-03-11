@@ -6,6 +6,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <thread>
+#include <jni.h>
 
 #include "Utils/Logger.hpp"
 #include "Utils/ProgressUtils.hpp"
@@ -77,7 +78,7 @@ std::vector<IGameProfile *> UE_Games = {
     new PUBGProfile(),
 };
 
-#define kUEDUMPER_VERSION "4.3.0"
+#define kPROGRAM_VER "4.3.1"
 
 // increase if needed
 #define WAIT_TIME_SEC 20
@@ -90,11 +91,14 @@ extern "C" void callMe(bool bDumpLib)
     std::thread(dump_thread, bDumpLib).detach();
 }
 
-__attribute__((constructor)) void onload()
+extern "C" jint JNIEXPORT JNI_OnLoad(JavaVM*, void *)
 {
-    LOGI("Using UE Dumper %s", kUEDUMPER_VERSION);
+
+    LOGI("Using UE Dumper %s", kPROGRAM_VER);
     // callMe(true); // dump lib from memory
     callMe(false);
+    
+    return JNI_VERSION_1_6;
 }
 
 void dump_thread(bool bDumpLib)
@@ -211,7 +215,7 @@ void dump_thread(bool bDumpLib)
                 }
 
                 LOGI("Dumping unreal lib from memory...");
-                std::string libDumpPath = KittyUtils::String::Fmt("%s/libUE_%p-%p.so", sDumpGameDir.c_str(), ue_elf.base(), ue_elf.end());
+                std::string libDumpPath = KittyUtils::String::fmt("%s/libUE_%p-%p.so", sDumpGameDir.c_str(), ue_elf.base(), ue_elf.end());
                 bool res = kMgr.dumpMemELF(ue_elf, libDumpPath);
                 LOGI("Dumping lib: %s.",  res ? "success" : "failed");
                 if (res)
@@ -252,7 +256,7 @@ done:
     {
         if (!it.first.empty())
         {
-            std::string path = KittyUtils::String::Fmt("%s/%s", sDumpGameDir.c_str(), it.first.c_str());
+            std::string path = KittyUtils::String::fmt("%s/%s", sDumpGameDir.c_str(), it.first.c_str());
             it.second.writeBufferToFile(path);
         }
     }
